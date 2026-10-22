@@ -45,6 +45,12 @@ func main() {
 	}
 	zmqEndpoint    := mustEnv("ZMQ_ENDPOINT", "tcp://127.0.0.1:28332")
 	listenAddr     := mustEnv("LISTEN_ADDR", "127.0.0.1:8088")
+
+	// NETWORK selects the chain this instance renders ("mainnet" or "testnet").
+	// The templates key their TESTNET badge and mainnet-only links off it, so a
+	// single template set serves both explorers.
+	render.SetNetwork(mustEnv("NETWORK", "mainnet"))
+
 	rpcURL         := mustEnv("RPC_URL", "")
 	rpcUser        := mustEnv("RPC_USER", "")
 	rpcPass        := mustEnv("RPC_PASS", "")

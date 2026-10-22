@@ -11,6 +11,11 @@
 # Usage (run as root or a user that can sudo to postgres):
 #   sudo bash verify-schema.sh
 #
+# On a host with no sudo, or to add a second chain to an existing database
+# without any superuser rights, run everything as the app role instead.  The
+# role and database must already exist; the schema is created if missing:
+#   NO_SUPERUSER=1 DB_SCHEMA=testnet bash verify-schema.sh
+#
 # Credentials are loaded from credentials.env in the same directory as this
 # script (copy credentials.env.example and fill in the values).  Variables
 # already set in the calling environment always take priority over the file.
@@ -55,6 +60,13 @@ fi
 
 DB_NAME="${DB_NAME:-bitmark}"
 DB_USER="${DB_USER:-bitmark}"
+DB_SCHEMA="${DB_SCHEMA:-public}" # schema holding the tables; a second chain can
+                                 # live in its own schema of the same database
+NO_SUPERUSER="${NO_SUPERUSER:-0}" # 1 = never use sudo/the postgres superuser;
+                                  # run every statement as $DB_USER instead.
+                                  # The role and database must already exist,
+                                  # and $DB_USER must be able to CREATE in the
+                                  # database (it is, when it owns it).
 DB_PASS="${DB_PASS:-}"           # leave empty to auto-generate on first run
 DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-5432}"
@@ -73,10 +85,15 @@ pg_super() {
 }
 
 # Run SQL as the postgres superuser, connected to the bitmark database.
-# DDL (CREATE/ALTER TABLE, CREATE INDEX) must run as superuser so it works
-# regardless of who originally created the tables.
+# DDL (CREATE/ALTER TABLE, CREATE INDEX) normally runs as superuser so it works
+# regardless of who originally created the tables.  Under NO_SUPERUSER=1 the DDL
+# runs as $DB_USER, which is sufficient when $DB_USER owns the objects.
 pg_super_db() {
-    pg_super -d "$DB_NAME" "$@"
+    if [[ "$NO_SUPERUSER" == "1" ]]; then
+        pg_app "$@"
+    else
+        pg_super -d "$DB_NAME" "$@"
+    fi
 }
 
 # Run SQL as the bitmark app user against the bitmark database.
@@ -91,45 +108,78 @@ pg_app() {
     fi
 }
 
-# ── step 0: require root ──────────────────────────────────────────────────────
+# Every psql call below resolves unqualified table names in $DB_SCHEMA and
+# creates new objects there.
+export PGOPTIONS="-c search_path=${DB_SCHEMA}"
 
-[[ $EUID -eq 0 ]] || die "Run as root: sudo bash $0"
+# ── steps 0–2: role, database, schema ────────────────────────────────────────
 
-# ── step 1: ensure PostgreSQL role exists ─────────────────────────────────────
+# Normal path: a superuser bootstraps the role, the database, and the schema.
+bootstrap_with_superuser() {
+    [[ $EUID -eq 0 ]] || die "Run as root: sudo bash $0  (or set NO_SUPERUSER=1)"
 
-info "Checking PostgreSQL role '$DB_USER'..."
-ROLE_EXISTS=$(pg_super -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" postgres)
+    info "Checking PostgreSQL role '$DB_USER'..."
+    local role_exists db_exists
+    role_exists=$(pg_super -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" postgres)
 
-if [[ "$ROLE_EXISTS" != "1" ]]; then
-    if [[ -z "$DB_PASS" ]]; then
-        DB_PASS=$(openssl rand -hex 16)
-        info "Generated password for role '$DB_USER': $DB_PASS"
-        info "(Save this — it will not be shown again.)"
+    if [[ "$role_exists" != "1" ]]; then
+        if [[ -z "$DB_PASS" ]]; then
+            DB_PASS=$(openssl rand -hex 16)
+            info "Generated password for role '$DB_USER': $DB_PASS"
+            info "(Save this — it will not be shown again.)"
+        fi
+        pg_super -c "CREATE ROLE $DB_USER LOGIN PASSWORD '$DB_PASS';" postgres
+        ok "Role '$DB_USER' created."
+    else
+        ok "Role '$DB_USER' already exists."
+        if [[ -z "$DB_PASS" ]]; then
+            # No password is fine — psql will use trust/peer auth or ~/.pgpass
+            info "No DB_PASS set; relying on pg_hba.conf auth for role '$DB_USER'."
+        fi
     fi
-    pg_super -c "CREATE ROLE $DB_USER LOGIN PASSWORD '$DB_PASS';" postgres
-    ok "Role '$DB_USER' created."
-else
-    ok "Role '$DB_USER' already exists."
-    if [[ -z "$DB_PASS" ]]; then
-        # No password is fine — psql will use trust/peer auth or ~/.pgpass
-        info "No DB_PASS set; relying on pg_hba.conf auth for role '$DB_USER'."
+
+    info "Checking database '$DB_NAME'..."
+    db_exists=$(pg_super -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" postgres)
+
+    if [[ "$db_exists" != "1" ]]; then
+        pg_super -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" postgres
+        ok "Database '$DB_NAME' created."
+    else
+        ok "Database '$DB_NAME' already exists."
     fi
-fi
 
-# ── step 2: ensure database exists ───────────────────────────────────────────
+    # Grant privileges (idempotent)
+    pg_super -d "$DB_NAME" -c "GRANT ALL ON SCHEMA public TO $DB_USER;" 2>/dev/null || true
 
-info "Checking database '$DB_NAME'..."
-DB_EXISTS=$(pg_super -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" postgres)
+    if [[ "$DB_SCHEMA" != "public" ]]; then
+        info "Ensuring schema '$DB_SCHEMA' exists..."
+        pg_super -d "$DB_NAME" -c "CREATE SCHEMA IF NOT EXISTS \"$DB_SCHEMA\" AUTHORIZATION $DB_USER;"
+        ok "Schema '$DB_SCHEMA' ready."
+    fi
+}
 
-if [[ "$DB_EXISTS" != "1" ]]; then
-    pg_super -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" postgres
-    ok "Database '$DB_NAME' created."
+# NO_SUPERUSER path: the role and database must already exist.  Everything runs
+# as $DB_USER, which can still create its own schema when it owns the database —
+# that is what lets a second chain be added without any superuser rights.
+bootstrap_as_app_user() {
+    info "NO_SUPERUSER=1 — running every statement as role '$DB_USER'."
+
+    pg_app -tAc "SELECT 1" >/dev/null 2>&1 || \
+        die "Cannot connect as '$DB_USER' to '$DB_NAME'. Create the role and database first (needs a superuser), then re-run."
+    ok "Connected to '$DB_NAME' as role '$DB_USER'."
+
+    if [[ "$DB_SCHEMA" != "public" ]]; then
+        info "Ensuring schema '$DB_SCHEMA' exists..."
+        pg_app -c "CREATE SCHEMA IF NOT EXISTS \"$DB_SCHEMA\" AUTHORIZATION $DB_USER;"
+        ok "Schema '$DB_SCHEMA' ready."
+    fi
+}
+
+if [[ "$NO_SUPERUSER" == "1" ]]; then
+    bootstrap_as_app_user
 else
-    ok "Database '$DB_NAME' already exists."
+    bootstrap_with_superuser
 fi
-
-# Grant privileges (idempotent)
-pg_super -d "$DB_NAME" -c "GRANT ALL ON SCHEMA public TO $DB_USER;" 2>/dev/null || true
 
 # ── step 3: apply schema migrations ──────────────────────────────────────────
 
@@ -527,7 +577,7 @@ ERRORS=0
 check_col() {
     local tbl=$1 col=$2 found
     local sql="SELECT 1 FROM information_schema.columns
-               WHERE table_name='$tbl' AND column_name='$col'"
+               WHERE table_schema='$DB_SCHEMA' AND table_name='$tbl' AND column_name='$col'"
     if [[ -n "$DB_PASS" ]]; then
         found=$(PGPASSWORD="$DB_PASS" psql -tAq \
             -U "$DB_USER" -h "$DB_HOST" -p "$DB_PORT" -d "$DB_NAME" \
@@ -609,7 +659,11 @@ if [[ $ERRORS -eq 0 ]]; then
     ok "Schema verification passed — all required columns present."
     echo
     info "PG_DSN to use in service env files:"
-    echo "  postgres://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
+    if [[ "$DB_SCHEMA" != "public" ]]; then
+        echo "  postgres://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable&search_path=${DB_SCHEMA}"
+    else
+        echo "  postgres://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
+    fi
 else
     die "$ERRORS column(s) still missing after migration. Check output above."
 fi

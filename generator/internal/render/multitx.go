@@ -53,6 +53,8 @@ func RenderMultiTx(tplPath string, w io.Writer, data MultiTxData) error {
 		"eq":  func(a, b int) bool { return a == b },
 	}
 
+	funcMap = withSharedFuncs(funcMap)
+
 	base := filepath.Base(tplPath)
 	tpl, err := template.New(base).Funcs(funcMap).ParseFiles(tplPath)
 	if err != nil {

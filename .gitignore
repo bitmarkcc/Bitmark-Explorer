@@ -1,5 +1,7 @@
 # ── Credentials ───────────────────────────────────────────────────────────────
 credentials.env
+credentials-*.env
+run-bitmark-*.sh
 
 # ── Compiled binaries ─────────────────────────────────────────────────────────
 /indexer/bitmark-indexer

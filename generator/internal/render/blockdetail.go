@@ -54,6 +54,8 @@ func RenderBlockDetail(tplPath string, w io.Writer, b *db.BlockDetail) error {
 		},
 	}
 
+	funcMap = withSharedFuncs(funcMap)
+
 	base := filepath.Base(tplPath)
 	tpl, err := template.New(base).Funcs(funcMap).ParseFiles(tplPath)
 	if err != nil {

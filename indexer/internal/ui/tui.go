@@ -107,7 +107,7 @@ func (t *TUI) Render(s ingest.Status) {
 }
 
 func (t *TUI) put(y, x int, s string) {
-	_ = t.stdscr.MovePrint(y, x, s)
+	t.stdscr.MovePrint(y, x, s)
 }
 
 func padRight(s string, width int) string {

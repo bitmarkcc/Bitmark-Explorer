@@ -35,7 +35,7 @@ type HomepageData struct {
 }
 
 func buildHomepageFuncMap() template.FuncMap {
-	return template.FuncMap{
+	return withSharedFuncs(template.FuncMap{
 		// poolURL returns the mining pool URL for a given algorithm name, or ""
 		"poolURL": func(algoName string) string {
 			switch algoName {
@@ -113,7 +113,7 @@ func buildHomepageFuncMap() template.FuncMap {
 			decimals := strconv.FormatFloat(frac, 'f', 2, 64)
 			return string(b) + decimals[1:] // append ".xx"
 		},
-	}
+	})
 }
 
 // RenderHomepage executes the homepage template to an arbitrary writer.

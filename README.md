@@ -461,6 +461,28 @@ Certbot modifies the vhost automatically and sets up auto-renewal.
 
 ---
 
+## Running a testnet explorer alongside mainnet
+
+A second instance can serve the Bitmark testnet from the same host, sharing the
+binaries and the PostgreSQL database while colliding with the mainnet explorer
+on nothing — different RPC port, ZMQ endpoint, HTTP port, web root, and database
+schema. Two pieces of configuration make it work:
+
+| Variable | Purpose |
+|----------|---------|
+| `NETWORK` | `testnet` makes the templates render a TESTNET badge and drop mainnet-only links. Unset (or `mainnet`) renders exactly as before. |
+| `search_path` in `PG_DSN` | Selects the schema holding that chain's tables, e.g. `…/bitmark?sslmode=disable&search_path=testnet`. No query hard-codes a schema. |
+
+Create the testnet schema with the `bitmark` role alone — no superuser, no
+`CREATE DATABASE` rights required:
+
+```bash
+NO_SUPERUSER=1 DB_SCHEMA=testnet bash database/verify-schema.sh
+```
+
+See **[`testnet/README.md`](testnet/README.md)** for the full runbook: port map,
+run scripts, lighttpd vhost, and certificate bootstrap order.
+
 ## Service management
 
 ```bash
@@ -536,6 +558,14 @@ Bitmark-Explorer/
 │       ├── addressdetail.html
 │       ├── multitx.html
 │       └── bitmark128.png
+│
+├── testnet/                     second instance for the Bitmark testnet
+│   ├── README.md                runbook: port map, install steps, operations
+│   ├── settings-testnet.conf    generator config (NETWORK=testnet, port 8089)
+│   ├── credentials-testnet.env.example
+│   ├── run-bitmark-indexer-testnet.sh
+│   ├── run-bitmark-hp-gen-testnet.sh
+│   └── lighttpd-tbtm.plx.im.conf   vhost snippet
 │
 └── tools/
     ├── btmk-status.sh           service status dashboard (coloured terminal output)

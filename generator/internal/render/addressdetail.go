@@ -40,6 +40,8 @@ func RenderAddressDetail(tplPath string, w io.Writer, a *db.AddressDetail) error
 		},
 	}
 
+	funcMap = withSharedFuncs(funcMap)
+
 	base := filepath.Base(tplPath)
 	tpl, err := template.New(base).Funcs(funcMap).ParseFiles(tplPath)
 	if err != nil {
